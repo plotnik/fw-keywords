@@ -85,6 +85,21 @@ class IndexerTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 resolve_date(Path(path), 2026)
 
+    def test_short_month_names(self):
+        short_names = "янв фев мар апр мая июня июля авг сент окт нояб дек".split()
+        weekdays = "чт вс вс ср пт пн ср сб вт чт вс вт".split()
+        for month, (name, weekday) in enumerate(zip(short_names, weekdays), 1):
+            with self.subTest(month=name):
+                self.assertEqual(
+                    str(resolve_date(Path(f"1 {name} {weekday}.md"), 2026)),
+                    f"2026-{month:02d}-01",
+                )
+        self.assertEqual(str(resolve_date(Path("2026-зима/1 дек пн.md"), 2026)), "2025-12-01")
+        self.assertEqual(str(resolve_date(Path("2024-зима/29 фев чт.md"), 2026)), "2024-02-29")
+        for path in ("1 янв пн.md", "2026-лето/1 янв чт.md", "2025-зима/29 фев сб.md"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                resolve_date(Path(path), 2026)
+
     def test_order_and_all_errors_without_writes(self):
         for path in ["2026-зима/1 декабря пн.md", "2026-зима/1 января чт.md", "1 января чт.md"]:
             self.note(path)

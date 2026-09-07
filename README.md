@@ -42,7 +42,7 @@ python -m diary_indexer prune
 
 `validate` performs no Ollama calls and writes no indexing files. All commands validate the complete source tree before changing indexing records. Errors list invalid paths. Notes must be valid UTF-8. Non-`.md` files are ignored; symbolic-link notes and directories are rejected.
 
-Names are case-sensitive: `day Russian-month weekday.md`, for example `1 января чт.md`. Months use Russian genitive names (`января` through `декабря`); weekdays are `пн вт ср чт пт сб вс`. Root entries use `CURRENT_YEAR`. Nested entries must be directly inside exactly one `YYYY-зима`, `YYYY-весна`, `YYYY-лето`, or `YYYY-осень` ancestor. Organizational folders *above* that ancestor are allowed; folders below it are rejected.
+Names are case-sensitive: `day Russian-month weekday.md`, for example `1 января чт.md`. Months accept full Russian genitive names (`января` through `декабря`) or the short forms `янв фев мар апр мая июня июля авг сент окт нояб дек`; weekdays are `пн вт ср чт пт сб вс`. Root entries use `CURRENT_YEAR`. Nested entries must be directly inside exactly one `YYYY-зима`, `YYYY-весна`, `YYYY-лето`, or `YYYY-осень` ancestor. Organizational folders *above* that ancestor are allowed; folders below it are rejected.
 
 `2026-зима/1 декабря пн.md` resolves to `2025-12-01`; January and February in that season resolve to 2026. Calendar dates, weekdays and season/month agreement are checked. Entries sort by date descending and then relative POSIX path ascending. Duplicate dates are allowed.
 

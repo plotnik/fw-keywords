@@ -1,0 +1,27 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Validate Diary Indexer",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "diary_indexer",
+            "args": [
+                "validate"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Index Diary",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "diary_indexer",
+            "args": [
+                "index"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
