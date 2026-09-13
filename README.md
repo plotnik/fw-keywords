@@ -127,3 +127,9 @@ python -m unittest discover -s tests -v
 Tests use a local mock HTTP server and temporary files, and in-memory Anthropic HTTP responses, never a real model. They cover dates and ordering, configuration, normalization, size/context rejection, schema requests, retries/timeouts, skips and replacements, fingerprint changes, failure preservation, source edits, transaction rollback, checkpoint recovery, locks, pruning and Cyrillic database portability.
 
 Ollama prints each HTTP attempt’s elapsed time, status, and raw response to stderr, including non-JSON responses. Transport failures report elapsed time and the error. To capture troubleshooting output, run `python -m diary_indexer index 2>ollama-debug.log`.
+
+Limit extraction attempts in one run with `python -m diary_indexer --max-requests 10`.
+The default is unlimited. The limit must be a positive integer and applies only to
+indexing, with either provider. Retries count; skipped entries and model inventory
+checks do not. Reaching the limit stops successfully and preserves committed work;
+rerun to continue. A note whose retry would exceed the limit remains pending.

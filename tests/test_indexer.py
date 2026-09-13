@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from diary_indexer.core import (Settings, IndexerError, Ollama, Anthropic, checkpoint, connect,
+from diary_indexer.core import (Settings, IndexerError, RequestLimitReached, Ollama, Anthropic, checkpoint, connect,
     database_lock, discover, normalize_keywords, resolve_date, run, save_entry)
 
 
@@ -264,6 +264,47 @@ class IndexerTests(unittest.TestCase):
             with self.assertRaisesRegex(IndexerError, "ANTHROPIC_API_KEY"):
                 run(settings)
             client.assert_not_called()
+
+    def test_request_limit_counts_retries_for_both_providers(self):
+        for provider in ("ollama", "anthropic"):
+            for status in (200, 503):
+                with self.subTest(provider=provider, status=status):
+                    settings = replace(self.settings, provider=provider, api_key="test-key")
+                    client = (Ollama if provider == "ollama" else Anthropic)(settings)
+                    self.addCleanup(client.close)
+                    client.max_requests = 1
+                    # Invalid output normally causes another extraction request;
+                    # a server failure normally causes a transport retry.
+                    response = httpx.Response(status, json={}, request=httpx.Request("POST", "https://example.test"))
+                    with patch.object(client.client, "request", return_value=response) as request, patch(
+                            "diary_indexer.core.time.sleep"):
+                        with self.assertRaises(RequestLimitReached):
+                            client.extract("note")
+                    self.assertEqual(request.call_count, 1)
+                    self.assertEqual(client.requests_used, 1)
+
+    def test_request_limit_preserves_progress_and_resumes(self):
+        self.note("1 января чт.md")
+        self.note("2 января пт.md")
+        with MockServer() as server:
+            settings = replace(self.settings, base_url=server.url)
+            run(settings, max_requests=1)
+            self.assertEqual(len(server.calls), 1)
+            self.assertEqual(self.rows(), [("2 января пт.md",)])
+            self.assertEqual(len(settings.checkpoint.read_text().splitlines()), 1)
+            run(settings, max_requests=1)
+            self.assertEqual(len(server.calls), 2)
+            self.assertEqual(len(self.rows()), 2)
+            run(settings, max_requests=1)
+            self.assertEqual(len(server.calls), 2)
+
+    def test_request_limit_validation(self):
+        for limit in (0, -1, 1.5, True):
+            with self.subTest(limit=limit), self.assertRaisesRegex(ValueError, "positive integer"):
+                run(self.settings, max_requests=limit)
+        with self.assertRaisesRegex(ValueError, "only supported for index"):
+            run(self.settings, "prune", max_requests=1)
+        self.assertFalse(self.settings.database.exists())
 
     def test_normalization(self):
         self.assertEqual(normalize_keywords({"keywords": [" МОСКВА ", "москва", "Пешая\n прогулка", "Ａ"]}, 10), ["москва", "пешая прогулка", "a"])

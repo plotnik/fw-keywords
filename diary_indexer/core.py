@@ -343,11 +343,24 @@ def normalize_keywords(value, maximum):
 #
 # ::
 
+# A per-run request budget is consumed immediately before an extraction HTTP
+# attempt, including retries. Inventory requests do not consume it. Exhaustion
+# is a normal stopping point: the coordinator keeps committed entries and lets
+# a later run resume. The budget is not part of extraction cache identity.
+#
+# ::
+
+class RequestLimitReached(Exception):
+    """The run has used its allowed extraction attempts."""
+
+
 class ModelClient:
     name = "Model provider"
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.max_requests = None
+        self.requests_used = 0
         self.client = httpx.Client(base_url=settings.base_url, timeout=settings.timeout, trust_env=False)
 
     def close(self):
@@ -358,6 +371,10 @@ class ModelClient:
 
     def request(self, method, path, **kwargs):
         for attempt in range(3):
+            if method == "POST" and path in ("/api/chat", "/v1/messages"):
+                if self.max_requests is not None and self.requests_used >= self.max_requests:
+                    raise RequestLimitReached
+                self.requests_used += 1
             try:
                 response = self.send(method, path, **kwargs)
                 response.raise_for_status()
@@ -636,13 +653,18 @@ def save_entry(db, entry, fingerprint, keywords):
 # client and database even when extraction, persistence, or interruption stops
 # the loop.
 #
-# .. function:: run(settings, command="index")
+# .. function:: run(settings, command="index", max_requests=None)
 #
 #    See `checkpoint <#checkpoint>`_
 #
 # ::
 
-def run(settings, command="index"):
+def run(settings, command="index", max_requests=None):
+    if max_requests is not None:
+        if isinstance(max_requests, bool) or not isinstance(max_requests, int) or max_requests < 1:
+            raise ValueError("max_requests must be a positive integer")
+        if command != "index":
+            raise ValueError("max_requests is only supported for index")
     entries = discover(settings)
     if command == "validate":
         print(f"Validated {len(entries)} entries.")
@@ -661,6 +683,8 @@ def run(settings, command="index"):
                 print(f"Pruned {len(missing)} missing entries.")
                 return
             extractor = (Anthropic if settings.provider == "anthropic" else Ollama)(settings)
+            extractor.max_requests = max_requests
+            extractor.requests_used = 0
             try:
                 extractor.check_model()
                 for entry in entries:
@@ -677,6 +701,8 @@ def run(settings, command="index"):
                     save_entry(db, entry, settings.fingerprint, keywords)
                     checkpoint(db, settings.checkpoint)
                     print(f"Indexed {entry.relative} ({len(keywords)} tags)", flush=True)
+            except RequestLimitReached:
+                print(f"Stopped after {extractor.requests_used} LLM requests (limit {max_requests}); rerun to resume.", flush=True)
             finally:
                 extractor.close()
         finally:
