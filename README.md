@@ -41,6 +41,7 @@ Edit `.env` to set `PAGES_DIR`. Relative paths resolve against the selected `.en
 | `REQUEST_TIMEOUT` | `600` | Seconds per HTTP operation |
 | `CONTEXT_SIZE` | `16384` | Model context tokens |
 | `MAX_NOTE_BYTES` | `12000` | Maximum UTF-8 note size |
+| `MAX_REQUESTS` | blank (unlimited) | Maximum extraction attempts per indexing run, including retries |
 | `MAX_TAGS` | `10` | Maximum returned keywords |
 
 The defaults target a 16 GB machine; actual memory use depends on model quantization and other running software. Only one note is submitted at a time.
@@ -128,8 +129,9 @@ Tests use a local mock HTTP server and temporary files, and in-memory Anthropic 
 
 Ollama prints each HTTP attempt’s elapsed time, status, and raw response to stderr, including non-JSON responses. Transport failures report elapsed time and the error. To capture troubleshooting output, run `python -m diary_indexer index 2>ollama-debug.log`.
 
-Limit extraction attempts in one run with `python -m diary_indexer --max-requests 10`.
-The default is unlimited. The limit must be a positive integer and applies only to
-indexing, with either provider. Retries count; skipped entries and model inventory
+Limit extraction attempts in one run by setting `MAX_REQUESTS=10` in `.env`, then
+running `python -m diary_indexer`. Blank or omitted means unlimited. A set limit
+must be a positive integer. It applies to indexing with either provider; validate
+and prune ignore it. Retries count; skipped entries and model inventory
 checks do not. Reaching the limit stops successfully and preserves committed work;
 rerun to continue. A note whose retry would exceed the limit remains pending.

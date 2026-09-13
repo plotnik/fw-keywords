@@ -85,10 +85,11 @@ Switching providers or models causes reindexing; changing only credentials
 does not. Existing Ollama fingerprints remain compatible. Set
 ``EXTRACTION_PROVIDER=ollama`` to return to local extraction.
 
-Limit a run with ``python -m diary_indexer --max-requests 10``. Each
+Limit a run by setting ``MAX_REQUESTS=10`` in ``.env``. Each
 extraction HTTP attempt consumes one request, including transport and malformed
 output retries. Skips and model inventory checks consume none. The default is
-unlimited; the limit must be positive and applies only to indexing. Reaching
+unlimited (blank or omitted); a set limit must be positive. Validation and
+pruning ignore the limit. Reaching
 it stops successfully with committed progress intact, ready for the next run.
 
 Validate and index
@@ -276,16 +277,9 @@ database portability.
       parser = argparse.ArgumentParser(description="Index Russian diary keywords using Ollama or Anthropic")
       parser.add_argument("command", nargs="?", choices=("index", "validate", "prune"), default="index")
       parser.add_argument("--env", type=Path, default=Path(".env"), help="settings file (default: ./.env)")
-      parser.add_argument("--max-requests", type=int, metavar="N",
-                          help="maximum LLM request attempts, including retries (index only; default: unlimited)")
       args = parser.parse_args()
-      if args.max_requests is not None:
-          if args.max_requests < 1:
-              parser.error("--max-requests must be a positive integer")
-          if args.command != "index":
-              parser.error("--max-requests is only supported for index")
       try:
-          run(Settings.load(args.env), args.command, max_requests=args.max_requests)
+          run(Settings.load(args.env), args.command)
       except (IndexerError, OSError, ValueError, sqlite3.Error) as exc:
           print(f"Error: {exc}", file=sys.stderr)
           return 1

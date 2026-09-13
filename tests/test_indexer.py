@@ -288,23 +288,37 @@ class IndexerTests(unittest.TestCase):
         self.note("2 января пт.md")
         with MockServer() as server:
             settings = replace(self.settings, base_url=server.url)
-            run(settings, max_requests=1)
+            run(replace(settings, max_requests=1))
             self.assertEqual(len(server.calls), 1)
             self.assertEqual(self.rows(), [("2 января пт.md",)])
             self.assertEqual(len(settings.checkpoint.read_text().splitlines()), 1)
-            run(settings, max_requests=1)
+            run(replace(settings, max_requests=1))
             self.assertEqual(len(server.calls), 2)
             self.assertEqual(len(self.rows()), 2)
-            run(settings, max_requests=1)
+            run(replace(settings, max_requests=1))
             self.assertEqual(len(server.calls), 2)
 
-    def test_request_limit_validation(self):
-        for limit in (0, -1, 1.5, True):
-            with self.subTest(limit=limit), self.assertRaisesRegex(ValueError, "positive integer"):
-                run(self.settings, max_requests=limit)
-        with self.assertRaisesRegex(ValueError, "only supported for index"):
-            run(self.settings, "prune", max_requests=1)
-        self.assertFalse(self.settings.database.exists())
+    def test_request_limit_configuration(self):
+        env = self.root / ".env"
+        with patch.dict(os.environ, {}, clear=True):
+            for value in ("0", "-1", "1.5", "abc"):
+                env.write_text(f"MAX_REQUESTS={value}\n")
+                with self.subTest(value=value), self.assertRaisesRegex(IndexerError, "MAX_REQUESTS"):
+                    Settings.load(env)
+            for contents in ("", "MAX_REQUESTS=\n", "MAX_REQUESTS=   \n"):
+                env.write_text(contents)
+                self.assertIsNone(Settings.load(env).max_requests)
+            env.write_text("MAX_REQUESTS=2\n")
+            settings = Settings.load(env)
+            self.assertEqual(settings.max_requests, 2)
+            self.assertEqual(settings.fingerprint, replace(settings, max_requests=None).fingerprint)
+            with patch.dict(os.environ, {"MAX_REQUESTS": "3"}):
+                self.assertEqual(Settings.load(env).max_requests, 3)
+            with patch.dict(os.environ, {"MAX_REQUESTS": ""}):
+                self.assertIsNone(Settings.load(env).max_requests)
+        self.note()
+        run(replace(self.settings, max_requests=1), "validate")
+        run(replace(self.settings, max_requests=1), "prune")
 
     def test_normalization(self):
         self.assertEqual(normalize_keywords({"keywords": [" МОСКВА ", "москва", "Пешая\n прогулка", "Ａ"]}, 10), ["москва", "пешая прогулка", "a"])

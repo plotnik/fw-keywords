@@ -118,6 +118,7 @@ class Settings:
     max_tags: int = 10
     provider: str = "ollama"
     api_key: str = field(default="", repr=False, compare=False)
+    max_requests: int | None = None
 
     @classmethod
     def load(cls, env: Path) -> Settings:
@@ -134,6 +135,9 @@ class Settings:
                 ("http://localhost:11434", "gemma3:4b") if provider == "ollama"
                 else ("https://api.anthropic.com", "claude-haiku-4-5-20251001")
             )
+            request_limit = (values.get("MAX_REQUESTS") or "").strip()
+            if request_limit and (not request_limit.isdecimal() or int(request_limit) < 1):
+                raise ValueError("MAX_REQUESTS must be a positive integer or blank for unlimited")
             result = cls(
                 path("PAGES_DIR", "pages"), path("DATABASE_PATH", "diary.sqlite3"),
                 path("CHECKPOINT_PATH", "checkpoint.jsonl"),
@@ -143,6 +147,7 @@ class Settings:
                 float(values.get("REQUEST_TIMEOUT", 600)), int(values.get("CONTEXT_SIZE", 16384)),
                 int(values.get("MAX_NOTE_BYTES", 12000)), int(values.get("MAX_TAGS", 10)),
                 provider, (values.get("ANTHROPIC_API_KEY") or "").strip(),
+                int(request_limit) if request_limit else None,
             )
             if not math.isfinite(result.timeout) or not 1 <= result.year <= 9999 or any(x <= 0 for x in (result.timeout, result.context, result.max_note_bytes, result.max_tags)):
                 raise ValueError("year must be 1–9999 and numeric limits must be positive")
@@ -359,7 +364,7 @@ class ModelClient:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.max_requests = None
+        self.max_requests = settings.max_requests
         self.requests_used = 0
         self.client = httpx.Client(base_url=settings.base_url, timeout=settings.timeout, trust_env=False)
 
@@ -653,18 +658,13 @@ def save_entry(db, entry, fingerprint, keywords):
 # client and database even when extraction, persistence, or interruption stops
 # the loop.
 #
-# .. function:: run(settings, command="index", max_requests=None)
+# .. function:: run(settings, command="index")
 #
 #    See `checkpoint <#checkpoint>`_
 #
 # ::
 
-def run(settings, command="index", max_requests=None):
-    if max_requests is not None:
-        if isinstance(max_requests, bool) or not isinstance(max_requests, int) or max_requests < 1:
-            raise ValueError("max_requests must be a positive integer")
-        if command != "index":
-            raise ValueError("max_requests is only supported for index")
+def run(settings, command="index"):
     entries = discover(settings)
     if command == "validate":
         print(f"Validated {len(entries)} entries.")
@@ -683,7 +683,7 @@ def run(settings, command="index", max_requests=None):
                 print(f"Pruned {len(missing)} missing entries.")
                 return
             extractor = (Anthropic if settings.provider == "anthropic" else Ollama)(settings)
-            extractor.max_requests = max_requests
+            extractor.max_requests = settings.max_requests
             extractor.requests_used = 0
             try:
                 extractor.check_model()
@@ -702,7 +702,7 @@ def run(settings, command="index", max_requests=None):
                     checkpoint(db, settings.checkpoint)
                     print(f"Indexed {entry.relative} ({len(keywords)} tags)", flush=True)
             except RequestLimitReached:
-                print(f"Stopped after {extractor.requests_used} LLM requests (limit {max_requests}); rerun to resume.", flush=True)
+                print(f"Stopped after {extractor.requests_used} LLM requests (limit {settings.max_requests}); rerun to resume.", flush=True)
             finally:
                 extractor.close()
         finally:
