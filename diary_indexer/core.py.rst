@@ -23,6 +23,7 @@ stores diary text; only the extraction request needs the note itself.
   import os
   import re
   import sqlite3
+  import sys
   import tempfile
   import time
   import unicodedata
@@ -352,10 +353,13 @@ Only locally validated, normalized keywords leave this boundary.
       def close(self):
           self.client.close()
 
+      def send(self, method, path, **kwargs):
+          return self.client.request(method, path, **kwargs)
+
       def request(self, method, path, **kwargs):
           for attempt in range(3):
               try:
-                  response = self.client.request(method, path, **kwargs)
+                  response = self.send(method, path, **kwargs)
                   response.raise_for_status()
                   return response
               except (httpx.TransportError, httpx.HTTPStatusError) as exc:
@@ -367,6 +371,10 @@ Only locally validated, normalized keywords leave this boundary.
 
 Ollama provides a local model inventory. Preserve that early availability
 check and its native schema request format for existing installations.
+Every HTTP attempt reports its wall-clock duration and raw response to stderr
+before status or JSON validation. This preserves malformed output for diagnosis
+and separates request time from retry delays. Transport failures have no body,
+but still report elapsed time. Flush immediately so redirected logs stay useful.
 
 .. class:: Ollama
 
@@ -374,6 +382,19 @@ check and its native schema request format for existing installations.
 
   class Ollama(ModelClient):
       name = "Ollama"
+
+      def send(self, method, path, **kwargs):
+          started = time.perf_counter()
+          try:
+              response = super().send(method, path, **kwargs)
+          except httpx.TransportError as exc:
+              elapsed = time.perf_counter() - started
+              print(f"Ollama {method} {path} failed after {elapsed:.2f}s: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+              raise
+          elapsed = time.perf_counter() - started
+          print(f"Ollama {method} {path} completed in {elapsed:.2f}s (HTTP {response.status_code})\n"
+                f"Ollama raw response:\n{response.text}", file=sys.stderr, flush=True)
+          return response
 
       def check_model(self):
           try:
