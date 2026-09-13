@@ -4,7 +4,7 @@ core
 *From diary pages to a resumable keyword index*
 
 The indexer turns dated Markdown files into normalized keyword relationships.
-Its work has three boundaries: validate the complete source tree, ask Ollama
+Its work has three boundaries: validate the complete source tree, ask the selected model
 to extract keywords one note at a time, and commit each successful result to
 SQLite. Keeping these boundaries explicit lets a later run reuse completed
 work without accepting partial model output or silently truncating a note.
@@ -27,7 +27,7 @@ stores diary text; only the extraction request needs the note itself.
   import time
   import unicodedata
   from contextlib import contextmanager
-  from dataclasses import dataclass
+  from dataclasses import dataclass, field
   from datetime import date, datetime, timezone
   from pathlib import Path
 
@@ -93,7 +93,7 @@ Validation rejects unusable numeric limits and conflicting output paths early.
 
 The output allowance and JSON schema grow with the keyword limit. Both the
 request and the conservative input budget use the same message builder, keeping
-the measured prompt aligned with what is sent to Ollama.
+the measured prompt aligned with what is sent to the selected provider.
 
 The fingerprint records choices that affect extraction or normalization, rather
 than storage locations or network timeouts. It identifies a model by name, not
@@ -115,6 +115,8 @@ by its weights; replacing weights under an unchanged name is not detected.
       context: int = 16384
       max_note_bytes: int = 12000
       max_tags: int = 10
+      provider: str = "ollama"
+      api_key: str = field(default="", repr=False, compare=False)
 
       @classmethod
       def load(cls, env: Path) -> Settings:
@@ -123,21 +125,30 @@ by its weights; replacing weights under an unchanged name is not detected.
           def path(key, default):
               return (env.parent / values.get(key, default)).resolve()
           try:
+              provider = (values.get("EXTRACTION_PROVIDER") or "ollama").strip().lower()
+              if provider not in ("ollama", "anthropic"):
+                  raise ValueError("EXTRACTION_PROVIDER must be ollama or anthropic")
+              prefix = provider.upper()
+              default_url, default_model = (
+                  ("http://localhost:11434", "gemma3:4b") if provider == "ollama"
+                  else ("https://api.anthropic.com", "claude-haiku-4-5-20251001")
+              )
               result = cls(
                   path("PAGES_DIR", "pages"), path("DATABASE_PATH", "diary.sqlite3"),
                   path("CHECKPOINT_PATH", "checkpoint.jsonl"),
                   int(values.get("CURRENT_YEAR") or date.today().year),
-                  values.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
-                  values.get("OLLAMA_MODEL", "gemma3:4b"),
+                  (values.get(prefix + "_BASE_URL") or default_url).rstrip("/"),
+                  values.get(prefix + "_MODEL", default_model),
                   float(values.get("REQUEST_TIMEOUT", 600)), int(values.get("CONTEXT_SIZE", 16384)),
                   int(values.get("MAX_NOTE_BYTES", 12000)), int(values.get("MAX_TAGS", 10)),
+                  provider, (values.get("ANTHROPIC_API_KEY") or "").strip(),
               )
               if not math.isfinite(result.timeout) or not 1 <= result.year <= 9999 or any(x <= 0 for x in (result.timeout, result.context, result.max_note_bytes, result.max_tags)):
                   raise ValueError("year must be 1–9999 and numeric limits must be positive")
               if result.database == result.checkpoint or result.checkpoint == Path(str(result.database) + ".lock"):
                   raise ValueError("database, checkpoint and lock paths must differ")
               if not result.model or not result.base_url.startswith(("http://", "https://")):
-                  raise ValueError("set a model and an HTTP(S) Ollama URL")
+                  raise ValueError("set a model and an HTTP(S) provider URL")
               return result
           except (TypeError, ValueError) as exc:
               raise IndexerError(f"Invalid configuration in {env}: {exc}") from exc
@@ -154,8 +165,19 @@ by its weights; replacing weights under an unchanged name is not detected.
           return [{"role": "system", "content": PROMPT + "\nСхема: " + json.dumps(self.schema, ensure_ascii=False)}, {"role": "user", "content": "Дневниковая запись (данные):\n" + note}]
 
       @property
+      def wire_schema(self):
+          if self.provider == "ollama":
+              return self.schema
+          # Anthropic's grammar accepts a subset of JSON Schema. The full limits
+          # remain in the system prompt and are enforced by normalize_keywords.
+          return {"type": "object", "properties": {"keywords": {"type": "array", "items": {"type": "string"}}}, "required": ["keywords"], "additionalProperties": False}
+
+      @property
       def fingerprint(self):
-          return digest(json.dumps({"model": self.model, "prompt_version": PROMPT_VERSION, "prompt": PROMPT, "schema": self.schema, "context": self.context, "max_note_bytes": self.max_note_bytes, "output_tokens": self.output_tokens, "temperature": 0, "normalization": "NFKC-casefold-whitespace-v1"}, sort_keys=True, ensure_ascii=False).encode())
+          # Keep existing Ollama fingerprints valid; other providers occupy a
+          # separate namespace. Credentials never contribute to cache identity.
+          provider_settings = {} if self.provider == "ollama" else {"provider": self.provider, "wire_schema": self.wire_schema}
+          return digest(json.dumps({**provider_settings, "model": self.model, "prompt_version": PROMPT_VERSION, "prompt": PROMPT, "schema": self.schema, "context": self.context, "max_note_bytes": self.max_note_bytes, "output_tokens": self.output_tokens, "temperature": 0, "normalization": "NFKC-casefold-whitespace-v1"}, sort_keys=True, ensure_ascii=False).encode())
 
 Describe the source before processing it
 ----------------------------------------
@@ -231,6 +253,8 @@ model tokenizer. A note that does not fit fails instead of being truncated.
       # One UTF-8 byte per token is deliberately pessimistic. Include message/schema
       # serialization and extra room for the model's chat template.
       budget = len(json.dumps(settings.messages(note), ensure_ascii=False).encode()) + 256
+      if settings.provider == "anthropic":
+          budget += len(json.dumps(settings.wire_schema).encode())
       if budget + settings.output_tokens > settings.context:
           raise ValueError("full prompt exceeds conservative CONTEXT_SIZE budget; increase context or shorten note")
       return content
@@ -314,11 +338,13 @@ response containing malformed or truncated model output permits one fresh
 extraction request. Each such request has its own transport retry allowance.
 Only locally validated, normalized keywords leave this boundary.
 
-.. class:: Ollama
+.. class:: ModelClient
 
 ::
 
-  class Ollama:
+  class ModelClient:
+      name = "Model provider"
+
       def __init__(self, settings: Settings):
           self.settings = settings
           self.client = httpx.Client(base_url=settings.base_url, timeout=settings.timeout, trust_env=False)
@@ -335,8 +361,19 @@ Only locally validated, normalized keywords leave this boundary.
               except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                   transient = isinstance(exc, httpx.TransportError) or exc.response.status_code in (408, 429) or exc.response.status_code >= 500
                   if not transient or attempt == 2:
-                      raise IndexerError(f"Ollama request failed: {exc}. Check Ollama, model availability and REQUEST_TIMEOUT; rerun to resume.") from exc
+                      raise IndexerError(f"{self.name} request failed: {exc}. Check credentials, endpoint, model availability and REQUEST_TIMEOUT; rerun to resume.") from exc
                   time.sleep(2 ** attempt)
+
+
+Ollama provides a local model inventory. Preserve that early availability
+check and its native schema request format for existing installations.
+
+.. class:: Ollama
+
+::
+
+  class Ollama(ModelClient):
+      name = "Ollama"
 
       def check_model(self):
           try:
@@ -360,6 +397,61 @@ Only locally validated, normalized keywords leave this boundary.
               except (ValueError, KeyError, TypeError, AttributeError) as exc:
                   if attempt:
                       raise IndexerError(f"Malformed Ollama output after one retry: {exc}. Check the model's structured-output support or context limits; rerun to resume.") from exc
+
+
+Anthropic uses the hosted Messages API. Selecting this provider sends diary
+text to that service and incurs API usage charges. Authentication belongs in
+request headers, while the system prompt is a top-level field rather than a
+message with the system role. The existing HTTP client supplies bounded
+transport retries without requiring another SDK dependency.
+
+JSON output uses a simplified grammar; local validation still enforces every
+keyword limit. Refusals stop immediately, and incomplete or malformed output
+gets one retry. We do not call Ollama's inventory endpoint for hosted models:
+Anthropic validates model access when the extraction request is submitted.
+The key is required only for indexing, so validate and prune remain offline.
+
+.. class:: Anthropic
+
+::
+
+  class Anthropic(ModelClient):
+      name = "Anthropic"
+
+      def __init__(self, settings: Settings):
+          if not settings.api_key:
+              raise IndexerError("Set ANTHROPIC_API_KEY to index with Anthropic")
+          super().__init__(settings)
+          self.client.headers.update({"x-api-key": settings.api_key, "anthropic-version": "2023-06-01"})
+
+      def check_model(self):
+          # Model access is checked by the Messages API, not a local inventory.
+          pass
+
+      def extract(self, note):
+          s = self.settings
+          system, user = s.messages(note)
+          payload = {
+              "model": s.model, "max_tokens": s.output_tokens, "stream": False,
+              "temperature": 0, "system": system["content"], "messages": [user],
+              "output_config": {"format": {"type": "json_schema", "schema": s.wire_schema}},
+          }
+          for attempt in range(2):
+              response = self.request("POST", "/v1/messages", json=payload)
+              try:
+                  body = response.json()
+                  if body.get("stop_reason") == "refusal":
+                      raise IndexerError("Anthropic refused keyword extraction; result not committed")
+                  if body.get("stop_reason") != "end_turn":
+                      raise ValueError("incomplete response; check output token and context limits")
+                  blocks = body["content"]
+                  if not isinstance(blocks, list):
+                      raise ValueError("expected a content block array")
+                  content = "".join(block["text"] for block in blocks if block["type"] == "text")
+                  return normalize_keywords(json.loads(content), s.max_tags)
+              except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                  if attempt:
+                      raise IndexerError(f"Malformed Anthropic output after one retry: {exc}. Check model structured-output support and limits; rerun to resume.") from exc
 
 
 Serialize writers and persist completed work
@@ -547,9 +639,9 @@ the loop.
                   checkpoint(db, settings.checkpoint)
                   print(f"Pruned {len(missing)} missing entries.")
                   return
-              ollama = Ollama(settings)
+              extractor = (Anthropic if settings.provider == "anthropic" else Ollama)(settings)
               try:
-                  ollama.check_model()
+                  extractor.check_model()
                   for entry in entries:
                       content = read_note(entry.path, settings)
                       if digest(content) != entry.content_hash:
@@ -558,13 +650,13 @@ the loop.
                       if previous == (entry.content_hash, settings.fingerprint, entry.diary_date):
                           print(f"Skip {entry.relative}", flush=True)
                           continue
-                      keywords = ollama.extract(content.decode("utf-8"))
+                      keywords = extractor.extract(content.decode("utf-8"))
                       if digest(read_note(entry.path, settings)) != entry.content_hash:
                           raise IndexerError(f"Source changed during extraction: {entry.relative}; result not committed; rerun")
                       save_entry(db, entry, settings.fingerprint, keywords)
                       checkpoint(db, settings.checkpoint)
                       print(f"Indexed {entry.relative} ({len(keywords)} tags)", flush=True)
               finally:
-                  ollama.close()
+                  extractor.close()
           finally:
               db.close()

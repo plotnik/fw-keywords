@@ -1,4 +1,7 @@
 import json
+import os
+
+import httpx
 import sqlite3
 import tempfile
 import threading
@@ -9,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from diary_indexer.core import (Settings, IndexerError, Ollama, checkpoint, connect,
+from diary_indexer.core import (Settings, IndexerError, Ollama, Anthropic, checkpoint, connect,
     database_lock, discover, normalize_keywords, resolve_date, run, save_entry)
 
 
@@ -129,6 +132,136 @@ class IndexerTests(unittest.TestCase):
         self.assertEqual(settings.pages, self.pages)
         self.assertEqual(settings.year, 2024)
         self.assertEqual(settings.max_tags, 5)
+
+    def anthropic_client(self, responses):
+        settings = replace(self.settings, provider="anthropic", api_key="test-secret",
+                           base_url="https://api.anthropic.com", model="claude-haiku-4-5-20251001")
+        client = Anthropic(settings)
+        client.client.close()
+        calls = []
+        def handler(request):
+            calls.append(request)
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            status, body = response
+            return httpx.Response(status, json=body)
+        client.client = httpx.Client(base_url=settings.base_url,
+            headers={"x-api-key": settings.api_key, "anthropic-version": "2023-06-01"},
+            transport=httpx.MockTransport(handler))
+        self.addCleanup(client.close)
+        return settings, client, calls
+
+    def anthropic_response(self, value, reason="end_turn"):
+        return {"stop_reason": reason, "content": [{"type": "text", "text": json.dumps(value)}]}
+
+    def test_anthropic_configuration_and_fingerprint(self):
+        env = self.root / ".env"
+        env.write_text("EXTRACTION_PROVIDER=anthropic\nANTHROPIC_API_KEY=file-key\n")
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.load(env)
+            self.assertEqual(settings.provider, "anthropic")
+            self.assertEqual(settings.base_url, "https://api.anthropic.com")
+            self.assertEqual(settings.model, "claude-haiku-4-5-20251001")
+            self.assertEqual(settings.api_key, "file-key")
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "override", "ANTHROPIC_MODEL": "other"}):
+                overridden = Settings.load(env)
+            self.assertEqual(overridden.api_key, "override")
+            self.assertEqual(overridden.model, "other")
+            env.write_text("EXTRACTION_PROVIDER=unknown\n")
+            with self.assertRaisesRegex(IndexerError, "EXTRACTION_PROVIDER"):
+                Settings.load(env)
+        self.assertNotIn("file-key", repr(settings))
+        self.assertEqual(settings.fingerprint, replace(settings, api_key="new-key").fingerprint)
+        self.assertNotEqual(settings.fingerprint, replace(settings, provider="ollama").fingerprint)
+        self.assertNotEqual(settings.fingerprint, replace(settings, model="other").fingerprint)
+
+    def test_anthropic_request_and_normalization(self):
+        settings = replace(self.settings, provider="anthropic", api_key="test-secret")
+        real_client = Anthropic(settings)
+        self.addCleanup(real_client.close)
+        self.assertEqual(real_client.client.headers["x-api-key"], "test-secret")
+        self.assertEqual(real_client.client.headers["anthropic-version"], "2023-06-01")
+        settings, client, calls = self.anthropic_client([
+            (200, self.anthropic_response({"keywords": [" МОСКВА ", "москва", "Ａ"]}))])
+        self.assertEqual(client.extract("Дневник"), ["москва", "a"])
+        request = calls[0]
+        self.assertEqual(str(request.url), "https://api.anthropic.com/v1/messages")
+        body = json.loads(request.content)
+        self.assertEqual(body["model"], settings.model)
+        self.assertEqual(body["max_tokens"], settings.output_tokens)
+        self.assertEqual(body["temperature"], 0)
+        self.assertEqual(body["messages"], [settings.messages("Дневник")[1]])
+        self.assertEqual(body["system"], settings.messages("Дневник")[0]["content"])
+        self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
+        self.assertNotIn("minLength", json.dumps(body["output_config"]))
+        self.assertNotIn("test-secret", request.content.decode())
+
+    def test_anthropic_retries_and_rejections(self):
+        good = self.anthropic_response({"keywords": ["Да"]})
+        with patch("diary_indexer.core.time.sleep"):
+            _, client, calls = self.anthropic_client([
+                (429, {}), (529, {}), (200, self.anthropic_response({"keywords": [1]})), (200, good)])
+            self.assertEqual(client.extract("text"), ["да"])
+            self.assertEqual(len(calls), 4)
+            for status in (400, 401, 403, 404):
+                _, client, calls = self.anthropic_client([(status, {})])
+                with self.assertRaisesRegex(IndexerError, "Anthropic request failed"):
+                    client.extract("text")
+                self.assertEqual(len(calls), 1)
+            _, client, calls = self.anthropic_client([httpx.ReadTimeout("timeout")] * 3)
+            with self.assertRaisesRegex(IndexerError, "Anthropic request failed"):
+                client.extract("text")
+            self.assertEqual(len(calls), 3)
+            bad_bodies = [None, {}, {"stop_reason": "end_turn", "content": []},
+                self.anthropic_response({"keywords": []}, "max_tokens"),
+                self.anthropic_response({"keywords": ["x" * 121]}),
+                self.anthropic_response({"keywords": ["x"] * 11})]
+            for body in bad_bodies:
+                with self.subTest(body=body):
+                    _, client, calls = self.anthropic_client([(200, body)] * 2)
+                    with self.assertRaisesRegex(IndexerError, "Malformed Anthropic"):
+                        client.extract("text")
+                    self.assertEqual(len(calls), 2)
+            _, client, calls = self.anthropic_client([(200, self.anthropic_response({}, "refusal"))])
+            with self.assertRaisesRegex(IndexerError, "refused"):
+                client.extract("text")
+            self.assertEqual(len(calls), 1)
+
+    def test_anthropic_resume_provider_switch_and_failure_preservation(self):
+        self.note()
+        entry = discover(self.settings)[0]
+        db = connect(self.settings.database)
+        save_entry(db, entry, self.settings.fingerprint, ["старое"])
+        db.close()
+        responses = [(200, self.anthropic_response({"keywords": ["Новое"]}))]
+        settings, client, calls = self.anthropic_client(responses)
+        # Keep the mocked client open across runs; run must still call close.
+        with patch("diary_indexer.core.Anthropic", return_value=client), patch.object(client, "close") as close:
+            run(settings)
+            run(settings)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(close.call_count, 2)
+            self.assertEqual(self.rows("SELECT name FROM tags"), [("новое",)])
+            old = self.rows("SELECT * FROM entries")
+            responses.extend([(200, self.anthropic_response({}, "refusal"))])
+            with self.assertRaisesRegex(IndexerError, "refused"):
+                run(replace(settings, max_tags=9))
+            self.assertEqual(self.rows("SELECT * FROM entries"), old)
+            self.assertEqual(self.rows("SELECT name FROM tags"), [("новое",)])
+            record = json.loads(settings.checkpoint.read_text())
+            self.assertEqual(record["fingerprint"], settings.fingerprint)
+
+    def test_anthropic_offline_commands_need_no_key(self):
+        self.note()
+        settings = replace(self.settings, provider="anthropic")
+        with patch("diary_indexer.core.httpx.Client") as client:
+            run(settings, "validate")
+            self.assertFalse(settings.database.exists())
+            run(settings, "prune")
+            with self.assertRaisesRegex(IndexerError, "ANTHROPIC_API_KEY"):
+                run(settings)
+            client.assert_not_called()
 
     def test_normalization(self):
         self.assertEqual(normalize_keywords({"keywords": [" МОСКВА ", "москва", "Пешая\n прогулка", "Ａ"]}, 10), ["москва", "пешая прогулка", "a"])

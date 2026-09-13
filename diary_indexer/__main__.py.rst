@@ -63,6 +63,28 @@ The defaults target a 16 GB machine; actual memory use depends on model
 quantization and other running software. Only one note is submitted at a
 time.
 
+Optional Anthropic extraction
+-----------------------------
+
+Ollama remains the default. To use the hosted Anthropic Messages API, set
+``EXTRACTION_PROVIDER=anthropic``, ``ANTHROPIC_API_KEY``, and optionally
+``ANTHROPIC_MODEL`` in the selected dotenv file or process environment.
+The default model is ``claude-haiku-4-5-20251001`` and the default
+``ANTHROPIC_BASE_URL`` is ``https://api.anthropic.com``. Choose a model
+supporting JSON structured outputs. This option sends diary text to
+Anthropic and incurs API usage charges; Ollama installation is unnecessary.
+
+Anthropic uses the same prompt and keyword normalization, with a compatible
+schema supplied through ``output_config.format``. Keyword count and length
+limits are checked locally. Refusals stop immediately, while malformed or
+incomplete responses get one retry. Transport retries apply to both providers.
+``CONTEXT_SIZE`` remains a local input guard for Anthropic, not an API option.
+``validate`` and ``prune`` need neither network access nor an API key.
+
+Switching providers or models causes reindexing; changing only credentials
+does not. Existing Ollama fingerprints remain compatible. Set
+``EXTRACTION_PROVIDER=ollama`` to return to local extraction.
+
 Validate and index
 ------------------
 
@@ -245,7 +267,7 @@ database portability.
 ::
 
   def main():
-      parser = argparse.ArgumentParser(description="Index Russian diary keywords using local Ollama")
+      parser = argparse.ArgumentParser(description="Index Russian diary keywords using Ollama or Anthropic")
       parser.add_argument("command", nargs="?", choices=("index", "validate", "prune"), default="index")
       parser.add_argument("--env", type=Path, default=Path(".env"), help="settings file (default: ./.env)")
       args = parser.parse_args()
