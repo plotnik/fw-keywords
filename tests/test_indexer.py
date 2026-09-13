@@ -178,6 +178,23 @@ class IndexerTests(unittest.TestCase):
         self.assertNotEqual(settings.fingerprint, replace(settings, provider="ollama").fingerprint)
         self.assertNotEqual(settings.fingerprint, replace(settings, model="other").fingerprint)
 
+    def test_anthropic_diagnostics_show_invalid_keywords_before_failure(self):
+        body = self.anthropic_response({"keywords": ["тема"] * 11})
+        _, client, calls = self.anthropic_client([(200, body), (200, body)])
+        output = io.StringIO()
+        with redirect_stderr(output), patch("diary_indexer.core.time.perf_counter",
+                side_effect=[0, 2.5, 10, 14]):
+            with self.assertRaisesRegex(IndexerError, "MAX_TAGS"):
+                client.extract("note")
+        log = output.getvalue()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(log.count("Anthropic raw response:"), 2)
+        self.assertIn("completed in 2.50s (HTTP 200)", log)
+        self.assertIn("completed in 4.00s (HTTP 200)", log)
+        self.assertIn("keywords", log)
+        self.assertIn("end_turn", log)
+        self.assertNotIn("test-secret", log)
+
     def test_anthropic_request_and_normalization(self):
         settings = replace(self.settings, provider="anthropic", api_key="test-secret")
         real_client = Anthropic(settings)

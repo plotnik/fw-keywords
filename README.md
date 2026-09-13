@@ -127,7 +127,7 @@ python -m unittest discover -s tests -v
 
 Tests use a local mock HTTP server and temporary files, and in-memory Anthropic HTTP responses, never a real model. They cover dates and ordering, configuration, normalization, size/context rejection, schema requests, retries/timeouts, skips and replacements, fingerprint changes, failure preservation, source edits, transaction rollback, checkpoint recovery, locks, pruning and Cyrillic database portability.
 
-Ollama prints each HTTP attempt’s elapsed time, status, and raw response to stderr, including non-JSON responses. Transport failures report elapsed time and the error. To capture troubleshooting output, run `python -m diary_indexer index 2>ollama-debug.log`.
+Both Ollama and Anthropic print each HTTP attempt’s elapsed time, status, and raw response to stderr, including non-JSON responses. Transport failures report elapsed time and the error. To capture troubleshooting output, run `python -m diary_indexer index 2>llm-debug.log`.
 
 Limit extraction attempts in one run by setting `MAX_REQUESTS=10` in `.env`, then
 running `python -m diary_indexer`. Blank or omitted means unlimited. A set limit

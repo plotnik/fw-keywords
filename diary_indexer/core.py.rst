@@ -353,6 +353,11 @@ attempt, including retries. Inventory requests do not consume it. Exhaustion
 is a normal stopping point: the coordinator keeps committed entries and lets
 a later run resume. The budget is not part of extraction cache identity.
 
+Both providers report each HTTP attempt's elapsed time, status, and raw response
+to stderr before status checks or JSON validation. Malformed responses therefore
+remain visible, including every retry. Transport failures report elapsed time
+without a response body. Flush immediately to keep redirected logs useful.
+
 ::
 
   class RequestLimitReached(Exception):
@@ -372,7 +377,17 @@ a later run resume. The budget is not part of extraction cache identity.
           self.client.close()
 
       def send(self, method, path, **kwargs):
-          return self.client.request(method, path, **kwargs)
+          started = time.perf_counter()
+          try:
+              response = self.client.request(method, path, **kwargs)
+          except httpx.TransportError as exc:
+              elapsed = time.perf_counter() - started
+              print(f"{self.name} {method} {path} failed after {elapsed:.2f}s: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+              raise
+          elapsed = time.perf_counter() - started
+          print(f"{self.name} {method} {path} completed in {elapsed:.2f}s (HTTP {response.status_code})\n"
+                f"{self.name} raw response:\n{response.text}", file=sys.stderr, flush=True)
+          return response
 
       def request(self, method, path, **kwargs):
           for attempt in range(3):
@@ -393,10 +408,6 @@ a later run resume. The budget is not part of extraction cache identity.
 
 Ollama provides a local model inventory. Preserve that early availability
 check and its native schema request format for existing installations.
-Every HTTP attempt reports its wall-clock duration and raw response to stderr
-before status or JSON validation. This preserves malformed output for diagnosis
-and separates request time from retry delays. Transport failures have no body,
-but still report elapsed time. Flush immediately so redirected logs stay useful.
 
 .. class:: Ollama
 
@@ -404,19 +415,6 @@ but still report elapsed time. Flush immediately so redirected logs stay useful.
 
   class Ollama(ModelClient):
       name = "Ollama"
-
-      def send(self, method, path, **kwargs):
-          started = time.perf_counter()
-          try:
-              response = super().send(method, path, **kwargs)
-          except httpx.TransportError as exc:
-              elapsed = time.perf_counter() - started
-              print(f"Ollama {method} {path} failed after {elapsed:.2f}s: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-              raise
-          elapsed = time.perf_counter() - started
-          print(f"Ollama {method} {path} completed in {elapsed:.2f}s (HTTP {response.status_code})\n"
-                f"Ollama raw response:\n{response.text}", file=sys.stderr, flush=True)
-          return response
 
       def check_model(self):
           try:
