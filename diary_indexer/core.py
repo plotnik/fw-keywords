@@ -1,3 +1,6 @@
+# core
+# ====
+
 from __future__ import annotations
 
 import hashlib
@@ -17,10 +20,12 @@ from pathlib import Path
 import httpx
 from dotenv import dotenv_values
 
+# .. class:: IndexerError
 
 class IndexerError(Exception):
     """An actionable configuration, input, or indexing failure."""
 
+# Constants
 
 PROMPT_VERSION = "1"
 PROMPT = """Извлеки краткие русские ключевые слова из дневниковой записи: темы,
@@ -33,9 +38,12 @@ WEEKDAYS = "пн вт ср чт пт сб вс".split()
 SEASONS = {"зима": (12, 1, 2), "весна": (3, 4, 5), "лето": (6, 7, 8), "осень": (9, 10, 11)}
 
 
+# .. function:: digest(data: bytes) -> str
+
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
+# .. class:: Settings
 
 @dataclass(frozen=True)
 class Settings:
@@ -91,6 +99,7 @@ class Settings:
     def fingerprint(self):
         return digest(json.dumps({"model": self.model, "prompt_version": PROMPT_VERSION, "prompt": PROMPT, "schema": self.schema, "context": self.context, "max_note_bytes": self.max_note_bytes, "output_tokens": self.output_tokens, "temperature": 0, "normalization": "NFKC-casefold-whitespace-v1"}, sort_keys=True, ensure_ascii=False).encode())
 
+# .. class:: Entry
 
 @dataclass(frozen=True)
 class Entry:
@@ -99,6 +108,8 @@ class Entry:
     diary_date: str
     content_hash: str
 
+
+# .. function:: resolve_date(relative: Path, year: int) -> date
 
 def resolve_date(relative: Path, year: int) -> date:
     match = re.fullmatch(r"(\d{1,2}) ([а-я]+) (пн|вт|ср|чт|пт|сб|вс)\.md", relative.name)
@@ -123,6 +134,8 @@ def resolve_date(relative: Path, year: int) -> date:
     return resolved
 
 
+# .. function:: read_note(path: Path, settings: Settings) -> bytes
+
 def read_note(path: Path, settings: Settings) -> bytes:
     with path.open("rb") as stream:
         content = stream.read(settings.max_note_bytes + 1)
@@ -136,6 +149,8 @@ def read_note(path: Path, settings: Settings) -> bytes:
         raise ValueError("full prompt exceeds conservative CONTEXT_SIZE budget; increase context or shorten note")
     return content
 
+
+# .. function:: discover(settings: Settings) -> list[Entry]
 
 def discover(settings: Settings) -> list[Entry]:
     if not settings.pages.is_dir():
@@ -166,6 +181,8 @@ def discover(settings: Settings) -> list[Entry]:
     return sorted(entries, key=lambda e: (-date.fromisoformat(e.diary_date).toordinal(), e.relative))
 
 
+# .. function:: normalize_keywords(value, maximum)
+
 def normalize_keywords(value, maximum):
     if not isinstance(value, dict) or set(value) != {"keywords"} or not isinstance(value["keywords"], list) or len(value["keywords"]) > maximum:
         raise ValueError("expected an object containing only a keywords array within MAX_TAGS")
@@ -180,6 +197,7 @@ def normalize_keywords(value, maximum):
             result.append(tag)
     return result
 
+# .. class:: Ollama
 
 class Ollama:
     def __init__(self, settings: Settings):
@@ -225,6 +243,8 @@ class Ollama:
                     raise IndexerError(f"Malformed Ollama output after one retry: {exc}. Check the model's structured-output support or context limits; rerun to resume.") from exc
 
 
+# .. function:: database_lock(path: Path)
+
 @contextmanager
 def database_lock(path: Path):
     # Lock a persistent sidecar: never unlink it, which could allow inode races.
@@ -252,6 +272,8 @@ def database_lock(path: Path):
             else:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
+
+# .. function:: connect(path)
 
 def connect(path):
     db = sqlite3.connect(path)
@@ -281,6 +303,8 @@ def connect(path):
         raise
 
 
+# .. function:: checkpoint(db, path)
+
 def checkpoint(db, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -303,6 +327,8 @@ def checkpoint(db, path):
             temporary.unlink(missing_ok=True)
 
 
+# .. function:: save_entry(db, entry, fingerprint, keywords)
+
 def save_entry(db, entry, fingerprint, keywords):
     with db:
         db.execute("""INSERT INTO entries(path, diary_date, content_hash, fingerprint, indexed_at)
@@ -316,6 +342,8 @@ def save_entry(db, entry, fingerprint, keywords):
             db.execute("INSERT INTO entry_tags SELECT ?, id FROM tags WHERE name=?", (entry_id, tag))
         db.execute("DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM entry_tags WHERE tag_id=tags.id)")
 
+
+# .. function:: run(settings, command="index")
 
 def run(settings, command="index"):
     entries = discover(settings)
