@@ -1,5 +1,5 @@
-# core
-# ====
+# Indexer Core
+# ============
 #
 # *From diary pages to a resumable keyword index*
 #
@@ -169,6 +169,17 @@ class Settings:
 
     def messages(self, note):
         return [{"role": "system", "content": PROMPT + "\nСхема: " + json.dumps(self.schema, ensure_ascii=False)}, {"role": "user", "content": "Дневниковая запись (данные):\n" + note}]
+
+    def request_payload(self, note):
+        """Build the same provider body for extraction and troubleshooting."""
+        if self.provider == "ollama":
+            return {"model": self.model, "stream": False, "messages": self.messages(note),
+                    "format": self.schema, "options": {"temperature": 0,
+                    "num_ctx": self.context, "num_predict": self.output_tokens}}
+        system, user = self.messages(note)
+        return {"model": self.model, "max_tokens": self.output_tokens, "stream": False,
+                "temperature": 0, "system": system["content"], "messages": [user],
+                "output_config": {"format": {"type": "json_schema", "schema": self.wire_schema}}}
 
     @property
     def wire_schema(self):
@@ -429,7 +440,7 @@ class Ollama(ModelClient):
     def extract(self, note):
         s = self.settings
         for attempt in range(2):
-            response = self.request("POST", "/api/chat", json={"model": s.model, "stream": False, "messages": s.messages(note), "format": s.schema, "options": {"temperature": 0, "num_ctx": s.context, "num_predict": s.output_tokens}})
+            response = self.request("POST", "/api/chat", json=s.request_payload(note))
             try:
                 body = response.json()
                 if body.get("done_reason") == "length":
@@ -471,12 +482,7 @@ class Anthropic(ModelClient):
 
     def extract(self, note):
         s = self.settings
-        system, user = s.messages(note)
-        payload = {
-            "model": s.model, "max_tokens": s.output_tokens, "stream": False,
-            "temperature": 0, "system": system["content"], "messages": [user],
-            "output_config": {"format": {"type": "json_schema", "schema": s.wire_schema}},
-        }
+        payload = s.request_payload(note)
         for attempt in range(2):
             response = self.request("POST", "/v1/messages", json=payload)
             try:

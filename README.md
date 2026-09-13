@@ -119,6 +119,25 @@ List<String> paths = jdbcTemplate.query(
 
 Supply the stored normalized tag (for example `москва`). For user-entered search terms, implement equivalent Unicode NFKC, case folding and whitespace normalization; Java lowercase alone is not fully equivalent to Unicode case folding. The UI may instead offer existing `tags.name` values. SQLite's default `lower()` is not sufficient for Cyrillic normalization. Full Spring Boot integration is outside this project.
 
+## Streamlit troubleshooting
+
+```sh
+python -m pip install -e '.[debug]'
+python -m streamlit run streamlit_debug.py
+```
+
+The app loads `.env`, validates the source tree, and selects the next pending
+file using the CLI's newest-first ordering and SQLite resume metadata. Enable
+**Include already indexed files** to retest a completed note. It displays the
+absolute filename, populated system/user prompt and exact provider request body.
+**Send request to LLM** runs the existing provider client, including model checks,
+retries and the configured request limit (per click). Responses remain visible
+even if keyword validation fails. Toggle **Display result as JSON** to switch
+between original text and a JSON tree; invalid JSON falls back to original text.
+Full HTTP responses and normalized keywords are also available. Changing the
+toggle does not resend a request. Nothing is committed to SQLite or the checkpoint.
+Use **Reload files and configuration** after editing inputs or `.env`.
+
 ## Tests
 
 ```sh

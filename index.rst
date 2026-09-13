@@ -16,4 +16,5 @@ documentation for details.
    :caption: Contents:
 
    diary_indexer/__main__.py
+   streamlit_debug.py
    diary_indexer/core.py
