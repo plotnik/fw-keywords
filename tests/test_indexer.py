@@ -1,4 +1,6 @@
 import json
+import io
+from contextlib import redirect_stderr
 import os
 
 import httpx
@@ -299,6 +301,37 @@ class IndexerTests(unittest.TestCase):
             run(settings, "prune")
             self.assertEqual(self.rows(), [])
             self.assertEqual(settings.checkpoint.read_text(), "")
+
+    def test_ollama_diagnostics_include_raw_responses_and_elapsed_time(self):
+        client = Ollama(self.settings)
+        client.client.close()
+        replies = [httpx.Response(503, text="temporarily unavailable"),
+                   httpx.Response(200, text="not JSON: Привет")]
+        client.client = httpx.Client(base_url=self.settings.base_url,
+            transport=httpx.MockTransport(lambda request: replies.pop(0)))
+        self.addCleanup(client.close)
+        output = io.StringIO()
+        with redirect_stderr(output), patch("diary_indexer.core.time.sleep"), patch(
+                "diary_indexer.core.time.perf_counter", side_effect=[10, 12.5, 20, 24]):
+            response = client.request("POST", "/api/chat")
+        self.assertEqual(response.text, "not JSON: Привет")
+        log = output.getvalue()
+        self.assertIn("completed in 2.50s (HTTP 503)", log)
+        self.assertIn("temporarily unavailable", log)
+        self.assertIn("completed in 4.00s (HTTP 200)", log)
+        self.assertIn("Ollama raw response:\nnot JSON: Привет", log)
+
+    def test_ollama_diagnostics_time_transport_failures(self):
+        client = Ollama(self.settings)
+        self.addCleanup(client.close)
+        output = io.StringIO()
+        with redirect_stderr(output), patch.object(client.client, "request",
+                side_effect=httpx.ReadTimeout("timed out")), patch(
+                "diary_indexer.core.time.sleep"), patch(
+                "diary_indexer.core.time.perf_counter", side_effect=[0, 5, 10, 15, 20, 25]):
+            with self.assertRaises(IndexerError):
+                client.request("POST", "/api/chat")
+        self.assertEqual(output.getvalue().count("failed after 5.00s: ReadTimeout"), 3)
 
     def test_malformed_and_server_retry(self):
         with MockServer() as server, patch("diary_indexer.core.time.sleep"):
