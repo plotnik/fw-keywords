@@ -332,8 +332,10 @@ def discover(settings: Settings) -> list[Entry]:
 # ::
 
 def normalize_keywords(value, maximum):
-    if not isinstance(value, dict) or set(value) != {"keywords"} or not isinstance(value["keywords"], list) or len(value["keywords"]) > maximum:
-        raise ValueError("expected an object containing only a keywords array within MAX_TAGS")
+    if not isinstance(value, dict) or set(value) != {"keywords"} or not isinstance(value["keywords"], list):
+        raise ValueError("expected an object containing only a keywords array")
+    if len(value["keywords"]) > maximum:
+        raise ValueError(f"keywords array length {len(value["keywords"])} > max length {maximum}")  
     result = []
     for raw in value["keywords"]:
         if not isinstance(raw, str) or not 1 <= len(raw) <= 120:
