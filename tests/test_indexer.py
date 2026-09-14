@@ -129,11 +129,11 @@ class IndexerTests(unittest.TestCase):
 
     def test_configuration_paths(self):
         env = self.root / ".env"
-        env.write_text("PAGES_DIR=pages\nCURRENT_YEAR=2024\nMAX_TAGS=5\n")
+        env.write_text("PAGES_DIR=pages\nCURRENT_YEAR=2024\nOUTPUT_TOKENS=1024\n")
         settings = Settings.load(env)
         self.assertEqual(settings.pages, self.pages)
         self.assertEqual(settings.year, 2024)
-        self.assertEqual(settings.max_tags, 5)
+        self.assertEqual(settings.output_tokens, 1024)
 
     def anthropic_client(self, responses):
         settings = replace(self.settings, provider="anthropic", api_key="test-secret",
@@ -179,12 +179,12 @@ class IndexerTests(unittest.TestCase):
         self.assertNotEqual(settings.fingerprint, replace(settings, model="other").fingerprint)
 
     def test_anthropic_diagnostics_show_invalid_keywords_before_failure(self):
-        body = self.anthropic_response({"keywords": ["тема"] * 11})
+        body = self.anthropic_response({"keywords": [""]})
         _, client, calls = self.anthropic_client([(200, body), (200, body)])
         output = io.StringIO()
         with redirect_stderr(output), patch("diary_indexer.core.time.perf_counter",
                 side_effect=[0, 2.5, 10, 14]):
-            with self.assertRaisesRegex(IndexerError, "MAX_TAGS"):
+            with self.assertRaisesRegex(IndexerError, "nonempty"):
                 client.extract("note")
         log = output.getvalue()
         self.assertEqual(len(calls), 2)
@@ -235,7 +235,7 @@ class IndexerTests(unittest.TestCase):
             bad_bodies = [None, {}, {"stop_reason": "end_turn", "content": []},
                 self.anthropic_response({"keywords": []}, "max_tokens"),
                 self.anthropic_response({"keywords": ["x" * 121]}),
-                self.anthropic_response({"keywords": ["x"] * 11})]
+                self.anthropic_response({"keywords": [""]})]
             for body in bad_bodies:
                 with self.subTest(body=body):
                     _, client, calls = self.anthropic_client([(200, body)] * 2)
@@ -265,7 +265,7 @@ class IndexerTests(unittest.TestCase):
             old = self.rows("SELECT * FROM entries")
             responses.extend([(200, self.anthropic_response({}, "refusal"))])
             with self.assertRaisesRegex(IndexerError, "refused"):
-                run(replace(settings, max_tags=9))
+                run(replace(settings, output_tokens=1024))
             self.assertEqual(self.rows("SELECT * FROM entries"), old)
             self.assertEqual(self.rows("SELECT name FROM tags"), [("новое",)])
             record = json.loads(settings.checkpoint.read_text())
@@ -337,11 +337,33 @@ class IndexerTests(unittest.TestCase):
         run(replace(self.settings, max_requests=1), "validate")
         run(replace(self.settings, max_requests=1), "prune")
 
+    def test_legacy_max_tags_is_ignored(self):
+        env = self.root / ".env"
+        env.write_text("MAX_TAGS=1\n")
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.load(env)
+        self.assertEqual(settings.output_tokens, 2048)
+        self.assertNotIn("maxItems", settings.schema["properties"]["keywords"])
+
+    def test_keyword_count_is_unrestricted(self):
+        keywords = [f"тема {i}" for i in range(100)]
+        self.assertEqual(normalize_keywords({"keywords": keywords}), keywords)
+        for provider in ("ollama", "anthropic"):
+            settings = replace(self.settings, provider=provider, api_key="test-key")
+            self.assertNotIn("maxItems", json.dumps(settings.request_payload("note")))
+            self.assertNotIn("не должно превышать", settings.messages("note")[0]["content"])
+            client = (Ollama if provider == "ollama" else Anthropic)(settings)
+            self.addCleanup(client.close)
+            body = ({"message": {"content": json.dumps({"keywords": keywords})}}
+                    if provider == "ollama" else self.anthropic_response({"keywords": keywords}))
+            with patch.object(client, "request", return_value=httpx.Response(200, json=body)):
+                self.assertEqual(client.extract("note"), keywords)
+
     def test_normalization(self):
-        self.assertEqual(normalize_keywords({"keywords": [" МОСКВА ", "москва", "Пешая\n прогулка", "Ａ"]}, 10), ["москва", "пешая прогулка", "a"])
+        self.assertEqual(normalize_keywords({"keywords": [" МОСКВА ", "москва", "Пешая\n прогулка", "Ａ"]}), ["москва", "пешая прогулка", "a"])
         for value in [{"keywords": [1]}, {"keywords": [" "]}, {"keywords": ["x"], "extra": 1}, {"keywords": "x"}, {"keywords": ["x" * 121]}, {"keywords": ["a\x00b"]}]:
             with self.assertRaises(ValueError):
-                normalize_keywords(value, 10)
+                normalize_keywords(value)
 
     def test_index_skip_edit_settings_prune_and_portability(self):
         path = self.note()
@@ -357,7 +379,7 @@ class IndexerTests(unittest.TestCase):
             server.responses = [(200, {"keywords": ["плавание"]})]
             run(settings)
             self.assertEqual(self.rows("SELECT name FROM tags"), [("плавание",)])
-            run(replace(settings, max_tags=9))
+            run(replace(settings, output_tokens=1024))
             self.assertEqual(len(server.calls), 3)
             query = "SELECT e.path FROM entries e JOIN entry_tags et ON et.entry_id=e.id JOIN tags t ON t.id=et.tag_id WHERE t.name='москва' ORDER BY e.diary_date DESC, e.path"
             self.assertEqual(self.rows(query), [(path.name,)])

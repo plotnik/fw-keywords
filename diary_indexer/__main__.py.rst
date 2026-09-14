@@ -55,8 +55,8 @@ defaults relative to its intended location.
 | ``MAX_NOTE_BYTES``  | ``12000``                  | Maximum UTF-8 note    |
 |                     |                            | size                  |
 +---------------------+----------------------------+-----------------------+
-| ``MAX_TAGS``        | ``10``                     | Maximum returned      |
-|                     |                            | keywords              |
+| ``OUTPUT_TOKENS``   | ``2048``                   | Response token budget      |
+|                     |                            | (no keyword cap)      |
 +---------------------+----------------------------+-----------------------+
 
 The defaults target a 16 GB machine; actual memory use depends on model
@@ -75,7 +75,7 @@ supporting JSON structured outputs. This option sends diary text to
 Anthropic and incurs API usage charges; Ollama installation is unnecessary.
 
 Anthropic uses the same prompt and keyword normalization, with a compatible
-schema supplied through ``output_config.format``. Keyword count and length
+schema supplied through ``output_config.format``. Keyword length
 limits are checked locally. Refusals stop immediately, while malformed or
 incomplete responses get one retry. Transport retries apply to both providers.
 ``CONTEXT_SIZE`` remains a local input guard for Anthropic, not an API option.
@@ -126,7 +126,7 @@ then relative POSIX path ascending. Duplicate dates are allowed.
 Oversized notes fail validation; nothing is truncated or split. A second
 conservative budget counts the full serialized prompt in UTF-8 bytes at
 one byte per token, adds 256 tokens for chat framing, and reserves
-``max(512, MAX_TAGS * 64)`` tokens for output. This intentionally
+``OUTPUT_TOKENS`` tokens for output. This intentionally
 rejects some notes that might fit with a particular tokenizer. Increase
 configured limits explicitly if needed.
 

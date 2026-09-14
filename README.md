@@ -42,7 +42,7 @@ Edit `.env` to set `PAGES_DIR`. Relative paths resolve against the selected `.en
 | `CONTEXT_SIZE` | `16384` | Model context tokens |
 | `MAX_NOTE_BYTES` | `12000` | Maximum UTF-8 note size |
 | `MAX_REQUESTS` | blank (unlimited) | Maximum extraction attempts per indexing run, including retries |
-| `MAX_TAGS` | `10` | Maximum returned keywords |
+| `OUTPUT_TOKENS` | `2048` | Response token budget (no keyword-count cap) |
 
 The defaults target a 16 GB machine; actual memory use depends on model quantization and other running software. Only one note is submitted at a time.
 
@@ -61,9 +61,9 @@ Names are case-sensitive: `day Russian-month weekday.md`, for example `1 янв�
 
 `2026-зима/1 декабря пн.md` resolves to `2025-12-01`; January and February in that season resolve to 2026. Calendar dates, weekdays and season/month agreement are checked. Entries sort by date descending and then relative POSIX path ascending. Duplicate dates are allowed.
 
-Oversized notes fail validation; nothing is truncated or split. A second conservative budget counts the full serialized prompt in UTF-8 bytes at one byte per token, adds 256 tokens for chat framing, and reserves `max(512, MAX_TAGS * 64)` tokens for output. This intentionally rejects some notes that might fit with a particular tokenizer. Increase configured limits explicitly if needed.
+Oversized notes fail validation; nothing is truncated or split. A second conservative budget counts the full serialized prompt in UTF-8 bytes at one byte per token, adds 256 tokens for chat framing, and reserves `OUTPUT_TOKENS` tokens for output. This intentionally rejects some notes that might fit with a particular tokenizer. Increase configured limits explicitly if needed.
 
-Ollama extraction uses a Russian system prompt and Ollama's [JSON-schema structured outputs](https://docs.ollama.com/capabilities/structured-outputs), with temperature zero. Diary content is supplied as data in a separate user message. Returned keywords are validated locally, NFKC-normalized, case-folded, whitespace-normalized and deduplicated. Synonyms and `е`/`ё` are not merged. Dictionary forms and Russian topics, activities, people and places are requested but remain model-dependent. Empty keyword lists are valid. Anthropic uses the same prompt and local validation, with the system prompt in the Messages API `system` field and a compatible schema in `output_config.format`. String and array limits are enforced locally; refusals and incomplete responses are never committed. `CONTEXT_SIZE` is a conservative local input guard for Anthropic, not an API parameter.
+Ollama extraction uses a Russian system prompt and Ollama's [JSON-schema structured outputs](https://docs.ollama.com/capabilities/structured-outputs), with temperature zero. Diary content is supplied as data in a separate user message. Returned keywords are validated locally, NFKC-normalized, case-folded, whitespace-normalized and deduplicated. Synonyms and `е`/`ё` are not merged. Dictionary forms and Russian topics, activities, people and places are requested but remain model-dependent. Empty keyword lists are valid. Keyword count is unrestricted; legacy `MAX_TAGS` settings are ignored. `OUTPUT_TOKENS` still bounds response length. This schema change causes existing entries to be reindexed. Anthropic uses the same prompt and local validation, with the system prompt in the Messages API `system` field and a compatible schema in `output_config.format`. String length limits are enforced locally; refusals and incomplete responses are never committed. `CONTEXT_SIZE` is a conservative local input guard for Anthropic, not an API parameter.
 
 ## Recovery and updates
 
